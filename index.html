@@ -630,25 +630,7 @@
                 <span id="currentServerName">Mon Serveur</span>
                 <span class="server-dropdown">▼</span>
             </div>
-            <div class="channels-list" id="channelsList">
-                <div class="channel-category">
-                    <span>📝 SALONS TEXTUELS</span>
-                    <span class="add-channel" onclick="openCreateChannelModal('text')">+</span>
-                </div>
-                <div class="channel active" data-channel="general" data-type="text">
-                    <span class="channel-icon">#</span>
-                    <span>général</span>
-                </div>
-                
-                <div class="channel-category">
-                    <span>🔊 SALONS VOCAUX</span>
-                    <span class="add-channel" onclick="openCreateChannelModal('voice')">+</span>
-                </div>
-                <div class="channel voice" data-channel="general-voice" data-type="voice">
-                    <span class="channel-icon">🔊</span>
-                    <span>Général</span>
-                </div>
-            </div>
+            <div class="channels-list" id="channelsList"></div>
 
             <div class="voice-controls">
                 <div class="voice-info">Connecté à</div>
@@ -756,37 +738,43 @@
             localStream: null,
             isMuted: false,
             newChannelType: 'text',
-            lastSync: Date.now()
+            lastSync: 0,
+            displayedMessages: new Set()
+        };
+
+        let sharedState = {
+            servers: [
+                {
+                    id: 0,
+                    name: 'Mon Serveur',
+                    channels: {
+                        text: [{ id: 'general', name: 'général' }],
+                        voice: [{ id: 'general-voice', name: 'Général' }]
+                    },
+                    messages: {}
+                }
+            ],
+            users: {},
+            lastUpdate: Date.now()
         };
 
         async function loadSharedState() {
             try {
                 const result = await window.storage.get(STORAGE_KEY, true);
                 if (result && result.value) {
-                    return JSON.parse(result.value);
+                    const loaded = JSON.parse(result.value);
+                    sharedState = loaded;
+                    return loaded;
                 }
             } catch (e) {
-                console.log('Création du nouvel état partagé');
+                console.log('Initialisation du nouvel état partagé');
             }
             
-            return {
-                servers: [
-                    {
-                        id: 0,
-                        name: 'Mon Serveur',
-                        channels: {
-                            text: [{ id: 'general', name: 'général' }],
-                            voice: [{ id: 'general-voice', name: 'Général' }]
-                        },
-                        messages: {}
-                    }
-                ],
-                users: {},
-                lastUpdate: Date.now()
-            };
+            await saveSharedState(sharedState);
+            return sharedState;
         }
 
-        async function saveSharedState(sharedState) {
+        async function saveSharedState() {
             sharedState.lastUpdate = Date.now();
             try {
                 await window.storage.set(STORAGE_KEY, JSON.stringify(sharedState), true);
@@ -796,7 +784,7 @@
         }
 
         async function syncState() {
-            const sharedState = await loadSharedState();
+            await loadSharedState();
             
             sharedState.users[state.userId] = {
                 username: state.username,
@@ -809,15 +797,13 @@
             };
 
             Object.keys(sharedState.users).forEach(uid => {
-                if (Date.now() - sharedState.users[uid].lastSeen > 10000) {
+                if (Date.now() - sharedState.users[uid].lastSeen > 15000) {
                     delete sharedState.users[uid];
                 }
             });
 
-            await saveSharedState(sharedState);
-            updateMembersList(sharedState.users);
-            
-            return sharedState;
+            await saveSharedState();
+            updateMembersList();
         }
 
         let syncInterval;
@@ -835,9 +821,9 @@
                 }
             });
 
-            const sharedState = await loadSharedState();
-            renderChannels(sharedState.servers);
-            loadMessages(sharedState.servers, state.currentChannel);
+            await loadSharedState();
+            renderChannels();
+            loadMessages();
         });
 
         async function setUsername() {
@@ -855,7 +841,7 @@
             closeModal('usernameModal');
             document.getElementById('messageInput').disabled = false;
 
-            syncInterval = setInterval(syncState, 2000);
+            syncInterval = setInterval(syncState, 3000);
             await syncState();
 
             await addSystemMessage(`Bienvenue ${username} ! 👋`);
@@ -874,7 +860,7 @@
                 return;
             }
 
-            const sharedState = await loadSharedState();
+            await loadSharedState();
             
             const newServer = {
                 id: sharedState.servers.length,
@@ -887,7 +873,7 @@
             };
 
             sharedState.servers.push(newServer);
-            await saveSharedState(sharedState);
+            await saveSharedState();
             
             const serversList = document.getElementById('serversList');
             const addBtn = serversList.querySelector('.add');
@@ -909,22 +895,22 @@
             document.querySelectorAll('.server:not(.add)').forEach(s => s.classList.remove('active'));
             document.querySelector(`[data-server="${serverId}"]`).classList.add('active');
             
-            const sharedState = await loadSharedState();
+            await loadSharedState();
             const server = sharedState.servers[serverId];
             document.getElementById('currentServerName').textContent = server.name;
             
-            renderChannels(sharedState.servers);
+            renderChannels();
             
             const firstTextChannel = server.channels.text[0];
             if (firstTextChannel) {
                 state.currentChannel = firstTextChannel.id;
                 state.currentChannelType = 'text';
-                loadMessages(sharedState.servers, firstTextChannel.id);
+                loadMessages();
             }
         }
 
-        function renderChannels(servers) {
-            const server = servers[state.currentServerId];
+        function renderChannels() {
+            const server = sharedState.servers[state.currentServerId];
             const channelsList = document.getElementById('channelsList');
             channelsList.innerHTML = '';
 
@@ -1016,7 +1002,7 @@
                 return;
             }
 
-            const sharedState = await loadSharedState();
+            await loadSharedState();
             const server = sharedState.servers[state.currentServerId];
             const channelType = state.newChannelType;
             const newChannel = {
@@ -1025,10 +1011,10 @@
             };
 
             server.channels[channelType].push(newChannel);
-            await saveSharedState(sharedState);
+            await saveSharedState();
             
             closeModal('createChannelModal');
-            renderChannels(sharedState.servers);
+            renderChannels();
             
             if (channelType === 'text') {
                 switchChannel(newChannel.id, 'text');
@@ -1040,158 +1026,108 @@
 
             state.currentChannel = channelId;
             state.currentChannelType = type;
+            state.displayedMessages.clear();
 
-            const sharedState = await loadSharedState();
-            renderChannels(sharedState.servers);
-
-            const server = sharedState.servers[state.currentServerId];
-            const channel = server.channels[type].find(ch => ch.id === channelId);
-            
-            document.getElementById('channelName').textContent = channel.name;
-            document.getElementById('channelIcon').textContent = '#';
-
-            loadMessages(sharedState.servers, channelId);
+            await loadSharedState();
+                        loadMessages();
+            renderChannels();
         }
 
-        function loadMessages(servers, channelId) {
-            const messagesDiv = document.getElementById('messages');
-            messagesDiv.innerHTML = '';
-
-            const server = servers[state.currentServerId];
-            const channelMessages = server.messages[channelId] || [];
+        async function loadMessages() {
+            const messagesContainer = document.getElementById('messages');
+            messagesContainer.innerHTML = '';
+            const server = sharedState.servers[state.currentServerId];
+            const messages = server.messages[state.currentChannel] || [];
             
-            channelMessages.forEach(msg => {
-                displayMessage(msg);
+            messages.forEach(msg => {
+                if (!state.displayedMessages.has(msg.id)) {
+                    addMessageToDOM(msg);
+                    state.displayedMessages.add(msg.id);
+                }
             });
         }
 
-        async function sendMessage(text) {
-            const sharedState = await loadSharedState();
-            const server = sharedState.servers[state.currentServerId];
+        function addMessageToDOM(msg) {
+            const messagesContainer = document.getElementById('messages');
+            const messageEl = document.createElement('div');
+            messageEl.className = 'message';
             
-            const msg = {
-                id: Date.now(),
-                channel: state.currentChannel,
-                author: state.username,
-                userId: state.userId,
-                text: text,
-                time: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
-            };
-
-            if (!server.messages[state.currentChannel]) {
-                server.messages[state.currentChannel] = [];
-            }
-            server.messages[state.currentChannel].push(msg);
-            await saveSharedState(sharedState);
-
-            displayMessage(msg);
-        }
-
-        function displayMessage(msg) {
-            const messagesDiv = document.getElementById('messages');
-            const msgEl = document.createElement('div');
-            msgEl.className = 'message';
-            
-            const avatar = msg.author[0].toUpperCase();
-            msgEl.innerHTML = `
-                <div class="message-avatar">${avatar}</div>
+            messageEl.innerHTML = `
+                <div class="message-avatar">${msg.username[0].toUpperCase()}</div>
                 <div class="message-content">
                     <div class="message-header">
-                        <span class="message-author">${msg.author}</span>
-                        <span class="message-time">${msg.time}</span>
+                        <span class="message-author">${msg.username}</span>
+                        <span class="message-time">${new Date(msg.time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
                     </div>
                     <div class="message-text">${msg.text}</div>
                 </div>
             `;
+            messagesContainer.appendChild(messageEl);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
 
-            messagesDiv.appendChild(msgEl);
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        async function sendMessage(text) {
+            const server = sharedState.servers[state.currentServerId];
+            const channelMessages = server.messages[state.currentChannel] || [];
+            const msg = {
+                id: Math.random().toString(36).substr(2, 9),
+                username: state.username,
+                userId: state.userId,
+                text: text,
+                time: Date.now()
+            };
+            channelMessages.push(msg);
+            server.messages[state.currentChannel] = channelMessages;
+            await saveSharedState();
+            addMessageToDOM(msg);
         }
 
         async function addSystemMessage(text) {
-            const sharedState = await loadSharedState();
-            const server = sharedState.servers[state.currentServerId];
-            
-            const msg = {
-                id: Date.now(),
-                channel: state.currentChannel,
-                author: 'Système',
-                userId: 'system',
-                text: text,
-                time: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
-            };
-
-            if (!server.messages[state.currentChannel]) {
-                server.messages[state.currentChannel] = [];
-            }
-            server.messages[state.currentChannel].push(msg);
-            await saveSharedState(sharedState);
-
-            if (state.currentChannelType === 'text') {
-                displayMessage(msg);
-            }
+            await sendMessage(`🛠️ ${text}`);
         }
 
-        function updateMembersList(users) {
-            const membersList = document.getElementById('membersList');
-            membersList.innerHTML = '';
+        function closeModal(id) {
+            document.getElementById(id).classList.remove('active');
+        }
 
-            const onlineUsers = Object.values(users).filter(u => u.online);
-            document.getElementById('onlineCount').textContent = onlineUsers.length;
+        function updateMembersList() {
+            const membersContainer = document.getElementById('membersList');
+            membersContainer.innerHTML = '';
+            let onlineCount = 0;
 
-            onlineUsers.forEach(user => {
+            Object.values(sharedState.users).forEach(user => {
                 const memberEl = document.createElement('div');
-                memberEl.className = 'member online';
+                memberEl.className = 'member';
                 if (user.inVoice) memberEl.classList.add('in-voice');
 
-                const avatar = user.username[0].toUpperCase();
-                const statusClass = user.speaking ? 'speaking' : '';
-                
                 memberEl.innerHTML = `
-                    <div class="member-avatar">
-                        ${avatar}
-                        <div class="status-indicator ${statusClass}"></div>
+                    <div class="member-avatar">${user.username[0].toUpperCase()}
+                        <div class="status-indicator ${user.speaking ? 'speaking' : ''}"></div>
                     </div>
-                    <div class="member-name">${user.username}${user.inVoice && user.voiceChannel ? ' 🔊' : ''}</div>
+                    <div class="member-name">${user.username}</div>
                 `;
-
-                membersList.appendChild(memberEl);
+                membersContainer.appendChild(memberEl);
+                onlineCount++;
             });
+
+            document.getElementById('onlineCount').textContent = onlineCount;
         }
 
         async function connectToVoice(channelId, channelName) {
-            if (state.voiceChannel === channelId) return;
-
-            if (state.voiceChannel) {
-                disconnectVoice();
-            }
+            state.voiceChannel = channelId;
+            document.querySelector('.voice-controls').classList.add('active');
+            document.getElementById('voiceChannelName').textContent = channelName;
+            renderChannels();
 
             try {
-                state.localStream = await navigator.mediaDevices.getUserMedia({ 
-                    audio: {
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true
-                    } 
-                });
-
-                state.voiceChannel = channelId;
-
-                const sharedState = await loadSharedState();
-                renderChannels(sharedState.servers);
-
-                document.querySelector('.voice-controls').classList.add('active');
-                document.getElementById('voiceChannelName').textContent = channelName;
-
-                await syncState();
-                await addSystemMessage(`🔊 Connecté au salon vocal ${channelName}`);
-
-                detectVoiceActivity(state.localStream);
-
+                state.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                state.isMuted = false;
+                document.getElementById('micBtn').classList.remove('muted');
             } catch (err) {
-                console.error('Erreur d\'accès au micro:', err);
-                alert('Impossible d\'accéder au microphone. Vérifiez les permissions dans votre navigateur.\n\nNote: Dans Claude.ai, les APIs audio sont limitées. Téléchargez le fichier HTML pour tester localement.');
+                alert('Impossible d’accéder au micro. Vérifiez les permissions.');
             }
+
+            await syncState();
         }
 
         async function disconnectVoice() {
@@ -1199,106 +1135,23 @@
                 state.localStream.getTracks().forEach(track => track.stop());
                 state.localStream = null;
             }
-
-            const oldChannel = state.voiceChannel;
             state.voiceChannel = null;
-            state.isMuted = false;
-
-            const sharedState = await loadSharedState();
-            renderChannels(sharedState.servers);
-
             document.querySelector('.voice-controls').classList.remove('active');
-            document.getElementById('micBtn').classList.remove('muted');
-
+            renderChannels();
             await syncState();
-
-            if (oldChannel) {
-                await addSystemMessage('🔇 Déconnecté du salon vocal');
-            }
         }
 
         function toggleMic() {
             if (!state.localStream) return;
-
             state.isMuted = !state.isMuted;
-            const audioTrack = state.localStream.getAudioTracks()[0];
-            
-            if (audioTrack) {
-                audioTrack.enabled = !state.isMuted;
-            }
-
-            const micBtn = document.getElementById('micBtn');
-            if (state.isMuted) {
-                micBtn.classList.add('muted');
-                micBtn.title = 'Activer le micro';
-            } else {
-                micBtn.classList.remove('muted');
-                micBtn.title = 'Couper le micro';
-            }
-        }
-
-        function detectVoiceActivity(stream) {
-            const audioContext = new AudioContext();
-            const analyser = audioContext.createAnalyser();
-            const microphone = audioContext.createMediaStreamSource(stream);
-            const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-            analyser.smoothingTimeConstant = 0.8;
-            analyser.fftSize = 1024;
-
-            microphone.connect(analyser);
-
-            function checkVolume() {
-                if (!state.localStream) {
-                    audioContext.close();
-                    return;
-                }
-
-                analyser.getByteFrequencyData(dataArray);
-                const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
-
-                const isSpeaking = average > 30 && !state.isMuted;
-                
-                syncState().then(sharedState => {
-                    if (sharedState.users[state.userId]) {
-                        sharedState.users[state.userId].speaking = isSpeaking;
-                        saveSharedState(sharedState);
-                    }
-                });
-
-                requestAnimationFrame(checkVolume);
-            }
-
-            checkVolume();
+            state.localStream.getAudioTracks()[0].enabled = !state.isMuted;
+            document.getElementById('micBtn').classList.toggle('muted', state.isMuted);
         }
 
         function openSettings() {
-            alert('Fonctionnalité à venir : Paramètres');
+            alert('Paramètres non implémentés pour le moment 🐺');
         }
 
-        function closeModal(modalId) {
-            document.getElementById(modalId).classList.remove('active');
-        }
-
-        window.addEventListener('beforeunload', async () => {
-            disconnectVoice();
-            if (syncInterval) clearInterval(syncInterval);
-            
-            const sharedState = await loadSharedState();
-            if (sharedState.users[state.userId]) {
-                delete sharedState.users[state.userId];
-                await saveSharedState(sharedState);
-            }
-        });
-
-        setInterval(async () => {
-            const sharedState = await loadSharedState();
-            if (sharedState.lastUpdate > state.lastSync) {
-                state.lastSync = sharedState.lastUpdate;
-                loadMessages(sharedState.servers, state.currentChannel);
-                renderChannels(sharedState.servers);
-            }
-        }, 3000);
     </script>
 </body>
 </html>
